@@ -8,6 +8,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
+import access
 import admin
 import config
 import db
@@ -25,6 +26,7 @@ async def main():
         logging.warning("ADMIN_IDS خالیه! هیچکس به پنل دسترسی نداره.")
 
     await db.init(config.DATABASE_URL)
+    await access.reload()
 
     bot = Bot(config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
