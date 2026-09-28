@@ -7,16 +7,17 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (CallbackQuery, Message, MessageOriginChannel,
-                           ReactionTypeEmoji)
+                           MessageOriginUser, ReactionTypeEmoji)
 
+import access
 import config
 import db
 import keyboards as kb
 import utils
 
 router = Router()
-router.message.filter(F.chat.type == "private", F.from_user.id.in_(config.ADMIN_IDS))
-router.callback_query.filter(F.from_user.id.in_(config.ADMIN_IDS))
+router.message.filter(F.chat.type == "private", access.IsAdmin())
+router.callback_query.filter(access.IsAdmin())
 
 PANEL = "🌹 به پنل مدیریت خوش اومدی"
 _tasks: set = set()
@@ -28,6 +29,7 @@ class St(StatesGroup):
     pin = State()
     caption = State()
     channel = State()
+    add_admin = State()
 
 
 async def drop_draft(state: FSMContext):
@@ -38,26 +40,92 @@ async def drop_draft(state: FSMContext):
             await db.delete_batch(data["batch_id"])
 
 
+async def reset(state: FSMContext):
+    await drop_draft(state)
+    await state.clear()
+
+
+async def show(target: Message, text: str, markup=None, edit: bool = True):
+    """edit=True: ویرایش پیام اینلاین | edit=False: پیام جدید (برای دکمه‌های کیبورد)"""
+    if edit:
+        await utils.safe_edit(target, text, markup)
+    else:
+        await target.answer(text, reply_markup=markup)
+
+
 # ---------- پنل ----------
 @router.message(Command("admin"))
 @router.message(Command("cancel"))
 async def cmd_admin(message: Message, state: FSMContext):
-    await drop_draft(state)
-    await state.clear()
-    await message.answer(PANEL, reply_markup=kb.admin_panel())
+    await reset(state)
+    owner = access.is_owner(message.from_user.id)
+    await message.answer("⌨️ کیبورد پنل فعال شد.", reply_markup=kb.admin_reply(owner))
+    await message.answer(PANEL, reply_markup=kb.admin_panel(owner))
 
 
 @router.callback_query(F.data == "adm:home")
 async def home(cb: CallbackQuery, state: FSMContext):
-    await drop_draft(state)
-    await state.clear()
-    await utils.safe_edit(cb.message, PANEL, kb.admin_panel())
+    await reset(state)
+    await utils.safe_edit(cb.message, PANEL, kb.admin_panel(access.is_owner(cb.from_user.id)))
     await cb.answer()
+
+
+# ---------- دکمه‌های کیبورد پایین (قبل از handlerهای state ثبت میشن تا اولویت داشته باشن) ----------
+@router.message(F.text == kb.BTN_STATS)
+async def k_stats(message: Message, state: FSMContext):
+    await reset(state)
+    await do_stats(message, edit=False)
+
+
+@router.message(F.text == kb.BTN_UPLOAD)
+async def k_upload(message: Message, state: FSMContext):
+    await reset(state)
+    await do_upload_start(message, message.from_user.id, state, edit=False)
+
+
+@router.message(F.text == kb.BTN_CHANNELS)
+async def k_channels(message: Message, state: FSMContext):
+    await reset(state)
+    await show_channels(message, edit=False)
+
+
+@router.message(F.text == kb.BTN_CAPTION)
+async def k_caption(message: Message, state: FSMContext):
+    await reset(state)
+    await show_caption(message, edit=False)
+
+
+@router.message(F.text == kb.BTN_BROADCAST)
+async def k_broadcast(message: Message, state: FSMContext):
+    await reset(state)
+    await do_broadcast_start(message, state, edit=False)
+
+
+@router.message(F.text == kb.BTN_PIN)
+async def k_pin(message: Message, state: FSMContext):
+    await reset(state)
+    await do_pin_start(message, state, edit=False)
+
+
+@router.message(F.text == kb.BTN_ADMINS, access.IsOwner())
+async def k_admins(message: Message, state: FSMContext):
+    await reset(state)
+    await show_admins(message, edit=False)
+
+
+@router.message(F.text == kb.BTN_ADMINS)  # ادمین معمولی
+async def k_admins_locked(message: Message):
+    await message.answer("🔒 این بخش فقط مخصوص مالک ربات هست.")
 
 
 # ---------- آمار ----------
 @router.callback_query(F.data == "adm:stats")
 async def stats(cb: CallbackQuery):
+    await do_stats(cb.message, edit=True)
+    await cb.answer()
+
+
+async def do_stats(target: Message, edit: bool):
     s = await db.stats()
     u, d = s["users"], s["dl"]
     text = (
@@ -72,31 +140,35 @@ async def stats(cb: CallbackQuery):
         f"• ۱ ماه اخیر: <b>{d['m1']}</b>\n"
         f"• کل: <b>{d['total']}</b>"
     )
-    await utils.safe_edit(cb.message, text, kb.back())
-    await cb.answer()
+    await show(target, text, kb.back(), edit)
 
 
 # ---------- آپلود گروهی ----------
 @router.callback_query(F.data == "adm:upload")
 async def upload_start(cb: CallbackQuery, state: FSMContext):
+    await do_upload_start(cb.message, cb.from_user.id, state, edit=True)
+    await cb.answer()
+
+
+async def do_upload_start(target: Message, admin_id: int, state: FSMContext, edit: bool):
     await drop_draft(state)
-    batch_id, code = await db.create_batch(cb.from_user.id)
+    batch_id, code = await db.create_batch(admin_id)
     await state.set_state(St.upload)
     await state.update_data(batch_id=batch_id, code=code)
-    await utils.safe_edit(
-        cb.message,
+    await show(
+        target,
         "📥 فایل‌هات رو (عکس، فیلم، گیف، ...) پشت سر هم بفرست.\n"
         "وقتی تموم شد دکمه «پایان» رو بزن.",
         kb.upload_controls(),
+        edit,
     )
-    await cb.answer()
 
 
 @router.callback_query(F.data == "adm:upload_cancel", StateFilter(St.upload))
 async def upload_cancel(cb: CallbackQuery, state: FSMContext):
     await drop_draft(state)
     await state.clear()
-    await utils.safe_edit(cb.message, PANEL, kb.admin_panel())
+    await utils.safe_edit(cb.message, PANEL, kb.admin_panel(access.is_owner(cb.from_user.id)))
     await cb.answer("لغو شد")
 
 
@@ -137,11 +209,7 @@ async def show_channels(target: Message, edit: bool):
     channels = await db.list_channels()
     text = "🔒 <b>کانال‌های جوین اجباری</b>\n\n"
     text += "برای حذف روی کانال بزن." if channels else "هنوز کانالی اضافه نشده."
-    markup = kb.channels_menu(channels)
-    if edit:
-        await utils.safe_edit(target, text, markup)
-    else:
-        await target.answer(text, reply_markup=markup)
+    await show(target, text, kb.channels_menu(channels), edit)
 
 
 @router.callback_query(F.data == "adm:channels")
@@ -210,11 +278,11 @@ async def channel_receive(message: Message, state: FSMContext, bot: Bot):
 
 
 # ---------- کپشن پیشفرض ----------
-async def show_caption(target: Message):
+async def show_caption(target: Message, edit: bool = True):
     cap = await db.get_setting("default_caption")
     text = "🖊 <b>کپشن پیشفرض</b>\n\n"
     text += f"کپشن فعلی:\n{cap}" if cap else "کپشنی تنظیم نشده."
-    await utils.safe_edit(target, text, kb.caption_menu(bool(cap)))
+    await show(target, text, kb.caption_menu(bool(cap)), edit)
 
 
 @router.callback_query(F.data == "adm:caption")
@@ -289,23 +357,35 @@ def launch(bot: Bot, message: Message, pin: bool):
     t.add_done_callback(_tasks.discard)
 
 
+async def do_broadcast_start(target: Message, state: FSMContext, edit: bool):
+    await state.set_state(St.broadcast)
+    await show(
+        target,
+        "📨 پیامی که میخوای برای همه کاربرا بره رو بفرست (هر نوع پیامی).\nبرای لغو: /cancel",
+        None,
+        edit,
+    )
+
+
+async def do_pin_start(target: Message, state: FSMContext, edit: bool):
+    await state.set_state(St.pin)
+    await show(
+        target,
+        "📌 پیامی که میخوای برای همه کاربرا بره و تو چتشون <b>سنجاق</b> بشه رو بفرست.\nبرای لغو: /cancel",
+        None,
+        edit,
+    )
+
+
 @router.callback_query(F.data == "adm:broadcast")
 async def broadcast_start(cb: CallbackQuery, state: FSMContext):
-    await state.set_state(St.broadcast)
-    await utils.safe_edit(
-        cb.message,
-        "📨 پیامی که میخوای برای همه کاربرا بره رو بفرست (هر نوع پیامی).\nبرای لغو: /cancel",
-    )
+    await do_broadcast_start(cb.message, state, edit=True)
     await cb.answer()
 
 
 @router.callback_query(F.data == "adm:pin")
 async def pin_start(cb: CallbackQuery, state: FSMContext):
-    await state.set_state(St.pin)
-    await utils.safe_edit(
-        cb.message,
-        "📌 پیامی که میخوای برای همه کاربرا بره و تو چتشون <b>سنجاق</b> بشه رو بفرست.\nبرای لغو: /cancel",
-    )
+    await do_pin_start(cb.message, state, edit=True)
     await cb.answer()
 
 
@@ -321,3 +401,83 @@ async def pin_receive(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     launch(bot, message, pin=True)
     await message.reply("⏳ ارسال و سنجاق شروع شد. وقتی تموم شد گزارش میدم.")
+
+
+# ================= مدیریت ادمین‌ها (فقط مالک) =================
+async def show_admins(target: Message, edit: bool):
+    admins = await db.list_admins()
+    text = "👑 <b>مدیریت ادمین‌ها</b>\n\n"
+    text += "مالک‌ها:\n" + "\n".join(f"• <code>{i}</code>" for i in sorted(access.OWNER_IDS)) + "\n\n"
+    text += "برای حذف ادمین روی اسمش بزن." if admins else "هنوز ادمین دیگه‌ای اضافه نشده."
+    await show(target, text, kb.admins_menu(admins), edit)
+
+
+@router.callback_query(F.data == "own:admins", access.IsOwner())
+async def own_admins(cb: CallbackQuery, state: FSMContext):
+    await reset(state)
+    await show_admins(cb.message, edit=True)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "own:add", access.IsOwner())
+async def own_add(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(St.add_admin)
+    await utils.safe_edit(
+        cb.message,
+        "➕ ادمین جدید رو با یکی از این روش‌ها معرفی کن:\n"
+        "• آیدی عددی (مثل 123456789)\n"
+        "• یوزرنیم (مثل @username) — فقط اگه قبلاً ربات رو استارت زده باشه\n"
+        "• یه پیام فوروارد شده از اون شخص\n\n"
+        "برای لغو: /cancel",
+    )
+    await cb.answer()
+
+
+@router.message(StateFilter(St.add_admin), access.IsOwner())
+async def own_add_receive(message: Message, state: FSMContext, bot: Bot):
+    uid = None
+    if isinstance(message.forward_origin, MessageOriginUser):
+        uid = message.forward_origin.sender_user.id
+    elif message.text:
+        t = message.text.strip()
+        if t.lstrip("-").isdigit():
+            uid = int(t)
+        else:
+            uid = await db.find_user_by_username(t.lstrip("@").replace("https://t.me/", ""))
+    if uid is None:
+        await message.reply(
+            "⚠️ پیدا نشد. آیدی عددی بفرست، یا یه پیام فوروارد شده از اون شخص "
+            "(یوزرنیم فقط برای کسایی جواب میده که ربات رو استارت زدن)."
+        )
+        return
+    if access.is_owner(uid):
+        await message.reply("این شخص مالک ربات هست و از قبل دسترسی کامل داره.")
+        return
+    if access.is_admin(uid):
+        await message.reply("این شخص از قبل ادمین هست.")
+        return
+    await db.add_admin(uid, message.from_user.id)
+    await access.reload()
+    await state.clear()
+    await message.answer(f"✅ کاربر <code>{uid}</code> ادمین شد.")
+    try:
+        await bot.send_message(
+            uid, "🌹 تو به عنوان ادمین ربات اضافه شدی.\nبرای باز کردن پنل: /admin"
+        )
+    except Exception:
+        await message.answer("ℹ️ به این شخص پیام نرفت (احتمالاً ربات رو استارت نکرده). باید یه بار /start بزنه.")
+    await show_admins(message, edit=False)
+
+
+@router.callback_query(F.data.startswith("own:del:"), access.IsOwner())
+async def own_del(cb: CallbackQuery):
+    uid = int(cb.data.split(":")[2])
+    await db.del_admin(uid)
+    await access.reload()
+    await show_admins(cb.message, edit=True)
+    await cb.answer("ادمین حذف شد")
+
+
+@router.callback_query(F.data.startswith("own:"))  # ادمین معمولی روی دکمه‌های مالک بزنه
+async def own_locked(cb: CallbackQuery):
+    await cb.answer("🔒 فقط مالک ربات به این بخش دسترسی داره.", show_alert=True)
