@@ -12,6 +12,11 @@ create table if not exists users (
     joined_at timestamptz not null default now(),
     is_blocked boolean not null default false
 );
+create table if not exists admins (
+    user_id bigint primary key,
+    added_by bigint,
+    added_at timestamptz not null default now()
+);
 create table if not exists settings (
     key text primary key,
     value text
@@ -82,6 +87,37 @@ async def all_user_ids() -> list[int]:
 
 async def mark_blocked(user_id: int):
     await pool.execute("update users set is_blocked = true where user_id = $1", user_id)
+
+
+# ---------- admins ----------
+async def list_admin_ids() -> set[int]:
+    rows = await pool.fetch("select user_id from admins")
+    return {r["user_id"] for r in rows}
+
+
+async def list_admins():
+    return await pool.fetch(
+        """select a.user_id, u.first_name, u.username
+           from admins a left join users u on u.user_id = a.user_id
+           order by a.added_at"""
+    )
+
+
+async def add_admin(user_id: int, added_by: int):
+    await pool.execute(
+        "insert into admins(user_id, added_by) values($1,$2) on conflict do nothing",
+        user_id, added_by,
+    )
+
+
+async def del_admin(user_id: int):
+    await pool.execute("delete from admins where user_id = $1", user_id)
+
+
+async def find_user_by_username(username: str) -> int | None:
+    return await pool.fetchval(
+        "select user_id from users where lower(username) = lower($1)", username
+    )
 
 
 # ---------- settings ----------
