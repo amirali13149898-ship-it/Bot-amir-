@@ -15,8 +15,10 @@ create table if not exists users (
 create table if not exists admins (
     user_id bigint primary key,
     added_by bigint,
+    perms text[] not null default '{}',
     added_at timestamptz not null default now()
 );
+alter table admins add column if not exists perms text[] not null default '{}';
 create table if not exists settings (
     key text primary key,
     value text
@@ -51,6 +53,9 @@ create table if not exists downloads (
 );
 create index if not exists idx_downloads_created on downloads(created_at);
 """
+
+
+ALL_PERMS = ["stats", "upload", "channels", "caption", "broadcast", "pin", "settings"]
 
 
 async def init(dsn: str):
@@ -97,17 +102,28 @@ async def list_admin_ids() -> set[int]:
 
 async def list_admins():
     return await pool.fetch(
-        """select a.user_id, u.first_name, u.username
+        """select a.user_id, a.perms, u.first_name, u.username
            from admins a left join users u on u.user_id = a.user_id
            order by a.added_at"""
     )
 
 
-async def add_admin(user_id: int, added_by: int):
+async def add_admin(user_id: int, added_by: int, perms: list[str] | None = None):
+    if perms is None:
+        perms = ALL_PERMS
     await pool.execute(
-        "insert into admins(user_id, added_by) values($1,$2) on conflict do nothing",
-        user_id, added_by,
+        "insert into admins(user_id, added_by, perms) values($1,$2,$3) on conflict do nothing",
+        user_id, added_by, perms,
     )
+
+
+async def get_admin_perms(user_id: int) -> set[str]:
+    row = await pool.fetchrow("select perms from admins where user_id = $1", user_id)
+    return set(row["perms"]) if row else set()
+
+
+async def set_admin_perms(user_id: int, perms: set[str]):
+    await pool.execute("update admins set perms = $1 where user_id = $2", list(perms), user_id)
 
 
 async def del_admin(user_id: int):
@@ -200,6 +216,11 @@ async def log_download(batch_id: int, user_id: int):
     await pool.execute(
         "insert into downloads(batch_id, user_id) values($1,$2)", batch_id, user_id
     )
+
+
+# ---------- پاکسازی آرشیو ----------
+async def clear_old_files():
+    await pool.execute("truncate table files, batches restart identity cascade")
 
 
 # ---------- stats ----------
