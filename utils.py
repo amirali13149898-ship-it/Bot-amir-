@@ -75,10 +75,34 @@ async def missing_channels(bot: Bot, user_id: int) -> list:
     return missing
 
 
+async def delete_after(bot: Bot, messages: list, delay: int):
+    """بعد از delay ثانیه، پیام‌های داده‌شده رو از چت پاک می‌کنه."""
+    await asyncio.sleep(delay)
+    for m in messages:
+        try:
+            await bot.delete_message(m.chat.id, m.message_id)
+        except Exception:
+            pass
+
+
 async def deliver(bot: Bot, chat_id: int, user_id: int, batch):
     files = await db.get_files(batch["id"])
     caption = await db.get_setting("default_caption")
+    sent = []
     for f in files:
-        await with_retry(lambda f=f: send_file(bot, chat_id, f, caption))
+        m = await with_retry(lambda f=f: send_file(bot, chat_id, f, caption))
+        if m:
+            sent.append(m)
         await asyncio.sleep(0.05)
     await db.log_download(batch["id"], user_id)
+
+    enabled = (await db.get_setting("delete_timer_enabled")) != "0"
+    secs_raw = await db.get_setting("delete_timer_seconds")
+    secs = int(secs_raw) if secs_raw and secs_raw.isdigit() else 30
+    if enabled and secs > 0 and sent:
+        await bot.send_message(
+            chat_id,
+            f"⚠️ این فایل(ها) تا <b>{secs} ثانیه</b> دیگه از این چت پاک می‌شن؛ "
+            "حتماً سیوشون کن یا به چت دیگه‌ای فوروارد کن.",
+        )
+        asyncio.create_task(delete_after(bot, sent, secs))
