@@ -30,6 +30,7 @@ class St(StatesGroup):
     caption = State()
     channel = State()
     add_admin = State()
+    set_seconds = State()
 
 
 async def drop_draft(state: FSMContext):
@@ -59,52 +60,82 @@ async def show(target: Message, text: str, markup=None, edit: bool = True):
 async def cmd_admin(message: Message, state: FSMContext):
     await reset(state)
     owner = access.is_owner(message.from_user.id)
-    await message.answer("⌨️ کیبورد پنل فعال شد.", reply_markup=kb.admin_reply(owner))
-    await message.answer(PANEL, reply_markup=kb.admin_panel(owner))
+    perms = access.perms_of(message.from_user.id)
+    await message.answer("⌨️ کیبورد پنل فعال شد.", reply_markup=kb.admin_reply(perms, owner))
+    await message.answer(PANEL, reply_markup=kb.admin_panel(perms, owner))
 
 
 @router.callback_query(F.data == "adm:home")
 async def home(cb: CallbackQuery, state: FSMContext):
     await reset(state)
-    await utils.safe_edit(cb.message, PANEL, kb.admin_panel(access.is_owner(cb.from_user.id)))
+    owner = access.is_owner(cb.from_user.id)
+    await utils.safe_edit(cb.message, PANEL, kb.admin_panel(access.perms_of(cb.from_user.id), owner))
     await cb.answer()
 
 
 # ---------- دکمه‌های کیبورد پایین (قبل از handlerهای state ثبت میشن تا اولویت داشته باشن) ----------
+async def need_perm(message: Message, perm: str) -> bool:
+    """اگه دسترسی نداشت True برمیگردونه و پیام قفل میفرسته."""
+    if access.has_perm(message.from_user.id, perm):
+        return False
+    await message.answer("🔒 دسترسی این بخش رو نداری.")
+    return True
+
+
 @router.message(F.text == kb.BTN_STATS)
 async def k_stats(message: Message, state: FSMContext):
+    if await need_perm(message, "stats"):
+        return
     await reset(state)
     await do_stats(message, edit=False)
 
 
 @router.message(F.text == kb.BTN_UPLOAD)
 async def k_upload(message: Message, state: FSMContext):
+    if await need_perm(message, "upload"):
+        return
     await reset(state)
     await do_upload_start(message, message.from_user.id, state, edit=False)
 
 
 @router.message(F.text == kb.BTN_CHANNELS)
 async def k_channels(message: Message, state: FSMContext):
+    if await need_perm(message, "channels"):
+        return
     await reset(state)
     await show_channels(message, edit=False)
 
 
 @router.message(F.text == kb.BTN_CAPTION)
 async def k_caption(message: Message, state: FSMContext):
+    if await need_perm(message, "caption"):
+        return
     await reset(state)
     await show_caption(message, edit=False)
 
 
 @router.message(F.text == kb.BTN_BROADCAST)
 async def k_broadcast(message: Message, state: FSMContext):
+    if await need_perm(message, "broadcast"):
+        return
     await reset(state)
     await do_broadcast_start(message, state, edit=False)
 
 
 @router.message(F.text == kb.BTN_PIN)
 async def k_pin(message: Message, state: FSMContext):
+    if await need_perm(message, "pin"):
+        return
     await reset(state)
     await do_pin_start(message, state, edit=False)
+
+
+@router.message(F.text == kb.BTN_SETTINGS)
+async def k_settings(message: Message, state: FSMContext):
+    if await need_perm(message, "settings"):
+        return
+    await reset(state)
+    await show_settings(message, edit=False)
 
 
 @router.message(F.text == kb.BTN_ADMINS, access.IsOwner())
@@ -118,9 +149,18 @@ async def k_admins_locked(message: Message):
     await message.answer("🔒 این بخش فقط مخصوص مالک ربات هست.")
 
 
+async def need_perm_cb(cb: CallbackQuery, perm: str) -> bool:
+    if access.has_perm(cb.from_user.id, perm):
+        return False
+    await cb.answer("🔒 دسترسی این بخش رو نداری.", show_alert=True)
+    return True
+
+
 # ---------- آمار ----------
 @router.callback_query(F.data == "adm:stats")
 async def stats(cb: CallbackQuery):
+    if await need_perm_cb(cb, "stats"):
+        return
     await do_stats(cb.message, edit=True)
     await cb.answer()
 
@@ -146,6 +186,8 @@ async def do_stats(target: Message, edit: bool):
 # ---------- آپلود گروهی ----------
 @router.callback_query(F.data == "adm:upload")
 async def upload_start(cb: CallbackQuery, state: FSMContext):
+    if await need_perm_cb(cb, "upload"):
+        return
     await do_upload_start(cb.message, cb.from_user.id, state, edit=True)
     await cb.answer()
 
@@ -168,7 +210,8 @@ async def do_upload_start(target: Message, admin_id: int, state: FSMContext, edi
 async def upload_cancel(cb: CallbackQuery, state: FSMContext):
     await drop_draft(state)
     await state.clear()
-    await utils.safe_edit(cb.message, PANEL, kb.admin_panel(access.is_owner(cb.from_user.id)))
+    owner = access.is_owner(cb.from_user.id)
+    await utils.safe_edit(cb.message, PANEL, kb.admin_panel(access.perms_of(cb.from_user.id), owner))
     await cb.answer("لغو شد")
 
 
@@ -214,6 +257,8 @@ async def show_channels(target: Message, edit: bool):
 
 @router.callback_query(F.data == "adm:channels")
 async def channels(cb: CallbackQuery, state: FSMContext):
+    if await need_perm_cb(cb, "channels"):
+        return
     await state.clear()
     await show_channels(cb.message, edit=True)
     await cb.answer()
@@ -287,6 +332,8 @@ async def show_caption(target: Message, edit: bool = True):
 
 @router.callback_query(F.data == "adm:caption")
 async def caption(cb: CallbackQuery, state: FSMContext):
+    if await need_perm_cb(cb, "caption"):
+        return
     await state.clear()
     await show_caption(cb.message)
     await cb.answer()
@@ -379,12 +426,16 @@ async def do_pin_start(target: Message, state: FSMContext, edit: bool):
 
 @router.callback_query(F.data == "adm:broadcast")
 async def broadcast_start(cb: CallbackQuery, state: FSMContext):
+    if await need_perm_cb(cb, "broadcast"):
+        return
     await do_broadcast_start(cb.message, state, edit=True)
     await cb.answer()
 
 
 @router.callback_query(F.data == "adm:pin")
 async def pin_start(cb: CallbackQuery, state: FSMContext):
+    if await need_perm_cb(cb, "pin"):
+        return
     await do_pin_start(cb.message, state, edit=True)
     await cb.answer()
 
@@ -476,6 +527,117 @@ async def own_del(cb: CallbackQuery):
     await access.reload()
     await show_admins(cb.message, edit=True)
     await cb.answer("ادمین حذف شد")
+
+
+# ---------- دسترسی‌های تکی هر ادمین (فقط مالک) ----------
+@router.callback_query(F.data.startswith("own:perm:"), access.IsOwner())
+async def own_perm_open(cb: CallbackQuery):
+    uid = int(cb.data.split(":")[2])
+    current = await db.get_admin_perms(uid)
+    await utils.safe_edit(
+        cb.message,
+        f"⚙️ <b>دسترسی‌های کاربر</b> <code>{uid}</code>\n\nبا زدن هر گزینه، روشن/خاموشش کن.",
+        kb.perms_menu(uid, current),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("own:permtg:"), access.IsOwner())
+async def own_perm_toggle(cb: CallbackQuery):
+    _, _, uid, key = cb.data.split(":")
+    uid = int(uid)
+    current = await db.get_admin_perms(uid)
+    if key in current:
+        current.discard(key)
+    else:
+        current.add(key)
+    await db.set_admin_perms(uid, current)
+    await access.reload()
+    await utils.safe_edit(
+        cb.message,
+        f"⚙️ <b>دسترسی‌های کاربر</b> <code>{uid}</code>\n\nبا زدن هر گزینه، روشن/خاموشش کن.",
+        kb.perms_menu(uid, current),
+    )
+    await cb.answer()
+
+
+# ---------- تنظیمات (تایمر حذف خودکار + پاکسازی آرشیو) ----------
+async def show_settings(target: Message, edit: bool = True):
+    enabled = (await db.get_setting("delete_timer_enabled")) != "0"
+    secs_raw = await db.get_setting("delete_timer_seconds")
+    secs = int(secs_raw) if secs_raw and secs_raw.isdigit() else 30
+    text = (
+        "⏱ <b>تنظیمات</b>\n\n"
+        "وقتی فایلی برای کاربر ارسال میشه، ربات یه پیام هشدار میفرسته و بعد از "
+        "مدت مشخص‌شده، خودِ فایل‌های ارسالی رو از چت کاربر پاک می‌کنه "
+        "(کاربر باید تا اون موقع سیوشون کنه)."
+    )
+    await show(target, text, kb.settings_menu(enabled, secs), edit)
+
+
+@router.callback_query(F.data == "adm:settings")
+async def settings_open(cb: CallbackQuery, state: FSMContext):
+    if await need_perm_cb(cb, "settings"):
+        return
+    await state.clear()
+    await show_settings(cb.message, edit=True)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "set:toggle")
+async def settings_toggle(cb: CallbackQuery):
+    if await need_perm_cb(cb, "settings"):
+        return
+    enabled = (await db.get_setting("delete_timer_enabled")) != "0"
+    await db.set_setting("delete_timer_enabled", "0" if enabled else "1")
+    await show_settings(cb.message, edit=True)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "set:seconds")
+async def settings_seconds_ask(cb: CallbackQuery, state: FSMContext):
+    if await need_perm_cb(cb, "settings"):
+        return
+    await state.set_state(St.set_seconds)
+    await utils.safe_edit(
+        cb.message,
+        "⏱ چند ثانیه بعد از ارسال، فایل‌ها پاک بشن؟ یه عدد بفرست (مثلاً 30).\nبرای لغو: /cancel",
+    )
+    await cb.answer()
+
+
+@router.message(StateFilter(St.set_seconds), F.text)
+async def settings_seconds_receive(message: Message, state: FSMContext):
+    if not access.has_perm(message.from_user.id, "settings"):
+        await state.clear()
+        return
+    t = message.text.strip()
+    if not t.isdigit() or int(t) <= 0:
+        await message.reply("⚠️ فقط یه عدد صحیح بزرگتر از صفر بفرست.")
+        return
+    await db.set_setting("delete_timer_seconds", t)
+    await state.clear()
+    await message.answer(f"✅ مدت زمان روی {t} ثانیه تنظیم شد.")
+    await show_settings(message, edit=False)
+
+
+@router.callback_query(F.data == "own:clearconfirm", access.IsOwner())
+async def clear_confirm(cb: CallbackQuery):
+    await utils.safe_edit(
+        cb.message,
+        "⚠️ این کار همه‌ی لینک‌های آپلودشده‌ی قبلی رو از دیتابیس پاک می‌کنه و دیگه قابل بازیابی نیست.\n\n"
+        "توجه: فایل‌های اصلی که قبلاً توی چت خودت با ربات فرستاده بودی، جای دیگه‌ای ذخیره نشدن و از اونجا حذف نمیشن؛ "
+        "فقط لینک‌های تحویل و رکورد دیتابیس پاک میشه.\n\nادامه بدم؟",
+        kb.clear_confirm(),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "own:clear", access.IsOwner())
+async def clear_run(cb: CallbackQuery):
+    await db.clear_old_files()
+    await utils.safe_edit(cb.message, "✅ آرشیو قدیمی پاک شد.", kb.back())
+    await cb.answer("پاک شد")
 
 
 @router.callback_query(F.data.startswith("own:"))  # ادمین معمولی روی دکمه‌های مالک بزنه
