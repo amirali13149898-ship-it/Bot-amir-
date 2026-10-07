@@ -5,6 +5,7 @@ from aiogram.types import ReplyKeyboardMarkup as RM
 
 # ---------- کیبورد پایین صفحه (Reply Keyboard) ----------
 BTN_STATS = "📊 آمار ربات"
+BTN_USERS = "👥 کاربران"
 BTN_UPLOAD = "📥 آپلود گروهی"
 BTN_CHANNELS = "🔒 جوین اجباری"
 BTN_CAPTION = "🖊 کپشن پیشفرض"
@@ -15,6 +16,7 @@ BTN_ADMINS = "👑 مدیریت ادمین‌ها"  # فقط مالک
 
 PERM_LABELS = {
     "stats": ("📊 آمار", BTN_STATS),
+    "users": ("👥 کاربران و بن", BTN_USERS),
     "upload": ("📥 آپلود گروهی", BTN_UPLOAD),
     "channels": ("🔒 جوین اجباری", BTN_CHANNELS),
     "caption": ("🖊 کپشن پیشفرض", BTN_CAPTION),
@@ -26,8 +28,11 @@ PERM_LABELS = {
 
 def admin_reply(perms: set[str], is_owner: bool) -> RM:
     rows = []
-    if "stats" in perms:
-        rows.append([KB(text=BTN_STATS)])
+    row = [KB(text=BTN_STATS)] if "stats" in perms else []
+    if "users" in perms:
+        row.append(KB(text=BTN_USERS))
+    if row:
+        rows.append(row)
     row = [KB(text=BTN_UPLOAD)] if "upload" in perms else []
     if "channels" in perms:
         row.append(KB(text=BTN_CHANNELS))
@@ -52,8 +57,13 @@ def admin_reply(perms: set[str], is_owner: bool) -> RM:
 # ---------- پنل شیشه‌ای (Inline) ----------
 def admin_panel(perms: set[str], is_owner: bool = False) -> M:
     rows = []
+    row = []
     if "stats" in perms:
-        rows.append([B(text="📊 آمار ربات", callback_data="adm:stats")])
+        row.append(B(text="📊 آمار ربات", callback_data="adm:stats"))
+    if "users" in perms:
+        row.append(B(text="👥 کاربران", callback_data="usr:p:0"))
+    if row:
+        rows.append(row)
     row = []
     if "upload" in perms:
         row.append(B(text="📥 آپلود گروهی", callback_data="adm:upload"))
@@ -105,6 +115,44 @@ def perms_menu(uid: int, current: set[str]) -> M:
         rows.append([B(text=f"{mark} {label}", callback_data=f"own:permtg:{uid}:{key}")])
     rows.append([B(text="🔙 بازگشت", callback_data="own:admins")])
     return M(inline_keyboard=rows)
+
+
+# ---------- کاربران / بن ----------
+def users_page(users, page: int, pages: int) -> M:
+    rows = []
+    for u in users:
+        label = ("🚫 " if u["is_banned"] else "") + (
+            f"@{u['username']}" if u["username"]
+            else (" ".join(x for x in (u["first_name"], u["last_name"]) if x).strip() or str(u["user_id"]))
+        )
+        rows.append([B(text=label[:60], callback_data=f"usr:v:{u['user_id']}:{page}")])
+    nav = []
+    if page > 0:
+        nav.append(B(text="◀️ قبلی", callback_data=f"usr:p:{page - 1}"))
+    nav.append(B(text=f"{page + 1}/{pages}", callback_data="usr:noop"))
+    if page < pages - 1:
+        nav.append(B(text="بعدی ▶️", callback_data=f"usr:p:{page + 1}"))
+    rows.append(nav)
+    rows.append([B(text="🔙 بازگشت", callback_data="adm:home")])
+    return M(inline_keyboard=rows)
+
+
+def user_detail(uid: int, page: int, banned: bool) -> M:
+    if banned:
+        act = B(text="✅ آزاد کردن", callback_data=f"usr:ub:{uid}:{page}")
+    else:
+        act = B(text="🚫 بن کردن", callback_data=f"usr:b:{uid}:{page}")
+    return M(inline_keyboard=[
+        [act],
+        [B(text="🔙 لیست کاربران", callback_data=f"usr:p:{page}")],
+    ])
+
+
+def ban_prompt(uid: int, page: int) -> M:
+    return M(inline_keyboard=[
+        [B(text="⏭ بدون متن، فقط بن کن", callback_data="usr:bs")],
+        [B(text="❌ انصراف", callback_data=f"usr:v:{uid}:{page}")],
+    ])
 
 
 def upload_controls() -> M:
