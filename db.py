@@ -52,10 +52,14 @@ create table if not exists downloads (
     created_at timestamptz not null default now()
 );
 create index if not exists idx_downloads_created on downloads(created_at);
+alter table users add column if not exists last_name text;
+alter table users add column if not exists is_banned boolean not null default false;
+alter table users add column if not exists ban_text text;
+alter table users add column if not exists banned_at timestamptz;
 """
 
 
-ALL_PERMS = ["stats", "upload", "channels", "caption", "broadcast", "pin", "settings"]
+ALL_PERMS = ["stats", "users", "upload", "channels", "caption", "broadcast", "pin", "settings"]
 
 
 async def init(dsn: str):
@@ -76,22 +80,56 @@ async def close():
 # ---------- users ----------
 async def add_user(u):
     await pool.execute(
-        """insert into users(user_id, username, first_name) values($1,$2,$3)
+        """insert into users(user_id, username, first_name, last_name) values($1,$2,$3,$4)
            on conflict (user_id) do update
            set username = excluded.username,
                first_name = excluded.first_name,
+               last_name = excluded.last_name,
                is_blocked = false""",
-        u.id, u.username, u.first_name,
+        u.id, u.username, u.first_name, u.last_name,
     )
 
 
 async def all_user_ids() -> list[int]:
-    rows = await pool.fetch("select user_id from users where not is_blocked")
+    rows = await pool.fetch("select user_id from users where not is_blocked and not is_banned")
     return [r["user_id"] for r in rows]
 
 
 async def mark_blocked(user_id: int):
     await pool.execute("update users set is_blocked = true where user_id = $1", user_id)
+
+
+async def count_users() -> int:
+    return await pool.fetchval("select count(*) from users")
+
+
+async def list_users(limit: int, offset: int):
+    return await pool.fetch(
+        "select * from users order by joined_at desc, user_id desc limit $1 offset $2",
+        limit, offset,
+    )
+
+
+async def get_user(user_id: int):
+    return await pool.fetchrow("select * from users where user_id = $1", user_id)
+
+
+async def list_banned_ids() -> set[int]:
+    rows = await pool.fetch("select user_id from users where is_banned")
+    return {r["user_id"] for r in rows}
+
+
+async def get_ban_text(user_id: int) -> str | None:
+    return await pool.fetchval("select ban_text from users where user_id = $1", user_id)
+
+
+async def set_ban(user_id: int, banned: bool, text: str | None = None):
+    await pool.execute(
+        """update users set is_banned = $2, ban_text = $3,
+           banned_at = case when $2 then now() else null end
+           where user_id = $1""",
+        user_id, banned, text if banned else None,
+    )
 
 
 # ---------- admins ----------
