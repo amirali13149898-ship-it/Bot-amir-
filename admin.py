@@ -31,6 +31,7 @@ class St(StatesGroup):
     channel = State()
     add_admin = State()
     set_seconds = State()
+    ban_text = State()
 
 
 async def drop_draft(state: FSMContext):
@@ -88,6 +89,14 @@ async def k_stats(message: Message, state: FSMContext):
         return
     await reset(state)
     await do_stats(message, edit=False)
+
+
+@router.message(F.text == kb.BTN_USERS)
+async def k_users(message: Message, state: FSMContext):
+    if await need_perm(message, "users"):
+        return
+    await reset(state)
+    await show_users(message, 0, edit=False)
 
 
 @router.message(F.text == kb.BTN_UPLOAD)
@@ -245,6 +254,150 @@ async def upload_receive(message: Message, state: FSMContext):
         await message.react([ReactionTypeEmoji(emoji="👍")])
     except Exception:
         pass
+
+
+# ---------- کاربران و بن ----------
+USERS_PER_PAGE = 10
+NO_PERM = "🔒 دسترسی این بخش رو نداری."
+
+
+async def show_users(target: Message, page: int, edit: bool):
+    total = await db.count_users()
+    pages = max(1, -(-total // USERS_PER_PAGE))
+    page = min(max(page, 0), pages - 1)
+    users = await db.list_users(USERS_PER_PAGE, page * USERS_PER_PAGE)
+    text = f"👥 <b>کاربران ربات</b>\n\nتعداد کل: <b>{total}</b>"
+    if total:
+        text += f" (صفحه {page + 1} از {pages})\n\nروی هر کاربر بزن تا جزئیات و گزینه‌ی بن رو ببینی.\n🚫 = بن‌شده"
+    else:
+        text += "\n\nهنوز کسی ربات رو استارت نزده."
+    await show(target, text, kb.users_page(users, page, pages), edit)
+
+
+async def show_user(target: Message, uid: int, page: int, edit: bool, note: str = ""):
+    u = await db.get_user(uid)
+    if not u:
+        await show_users(target, page, edit)
+        return
+    name = html.escape(utils.full_name(u)) or "—"
+    uname = f"@{html.escape(u['username'])}" if u["username"] else "ندارد"
+    banned = u["is_banned"]
+    text = (
+        f"{note}👤 <b>اطلاعات کاربر</b>\n\n"
+        f"🏷 آیدی: {uname}\n"
+        f"📝 اسم: {name}\n"
+        f"🔢 آیدی عددی: <code>{uid}</code>\n"
+        f"📅 تاریخ استارت: {u['joined_at']:%Y-%m-%d}\n"
+        f"وضعیت: {'🚫 بن‌شده' if banned else '✅ فعال'}"
+    )
+    if banned and u["ban_text"]:
+        text += f"\n\n💬 متن بن:\n{u['ban_text']}"
+    await show(target, text, kb.user_detail(uid, page, banned), edit)
+
+
+@router.callback_query(F.data == "usr:noop")
+async def users_noop(cb: CallbackQuery):
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("usr:p:"))
+async def users_list(cb: CallbackQuery, state: FSMContext):
+    if not access.has_perm(cb.from_user.id, "users"):
+        await cb.answer(NO_PERM, show_alert=True)
+        return
+    await reset(state)
+    await show_users(cb.message, int(cb.data.split(":")[2]), edit=True)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("usr:v:"))
+async def user_view(cb: CallbackQuery, state: FSMContext):
+    if not access.has_perm(cb.from_user.id, "users"):
+        await cb.answer(NO_PERM, show_alert=True)
+        return
+    await reset(state)
+    _, _, uid, page = cb.data.split(":")
+    await show_user(cb.message, int(uid), int(page), edit=True)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("usr:b:"))
+async def user_ban_ask(cb: CallbackQuery, state: FSMContext):
+    if not access.has_perm(cb.from_user.id, "users"):
+        await cb.answer(NO_PERM, show_alert=True)
+        return
+    _, _, uid, page = cb.data.split(":")
+    uid, page = int(uid), int(page)
+    if access.is_admin(uid):
+        await cb.answer("❌ ادمین‌ها و مالک رو نمیشه بن کرد.", show_alert=True)
+        return
+    await reset(state)
+    await state.set_state(St.ban_text)
+    await state.update_data(ban_uid=uid, ban_page=page)
+    await utils.safe_edit(
+        cb.message,
+        "✍️ متنی که میخوای همراه پیام بن برای کاربر نمایش داده بشه رو بفرست.\n"
+        "اگه نمیخوای متنی باشه، «بدون متن» رو بزن.\n\nبرای لغو: /cancel",
+        kb.ban_prompt(uid, page),
+    )
+    await cb.answer()
+
+
+async def do_ban(bot: Bot, target: Message, uid: int, page: int, text: str | None, edit: bool):
+    if access.is_admin(uid):
+        await target.answer("❌ ادمین‌ها و مالک رو نمیشه بن کرد.")
+        return
+    await access.ban(uid, text)
+    msg = "🚫 شما از استفاده از این ربات محروم شده‌اید."
+    if text:
+        msg += "\n\n" + text
+    note = "✅ کاربر بن شد.\n"
+    try:
+        await bot.send_message(uid, msg)
+    except Exception:
+        note += "ℹ️ پیام بن به کاربر نرسید (احتمالاً ربات رو بلاک کرده).\n"
+    await show_user(target, uid, page, edit, note=note + "\n")
+
+
+@router.callback_query(F.data == "usr:bs", StateFilter(St.ban_text))
+async def user_ban_skip(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    if not access.has_perm(cb.from_user.id, "users"):
+        await state.clear()
+        await cb.answer(NO_PERM, show_alert=True)
+        return
+    data = await state.get_data()
+    await state.clear()
+    await do_ban(bot, cb.message, data["ban_uid"], data["ban_page"], None, edit=True)
+    await cb.answer("بن شد")
+
+
+@router.message(StateFilter(St.ban_text), F.text)
+async def user_ban_text(message: Message, state: FSMContext, bot: Bot):
+    if not access.has_perm(message.from_user.id, "users"):
+        await state.clear()
+        return
+    if len(message.text) > 1000:
+        await message.reply("⚠️ متن بلندتر از ۱۰۰۰ کاراکتره، کوتاه‌تر بفرست.")
+        return
+    data = await state.get_data()
+    await state.clear()
+    await do_ban(bot, message, data["ban_uid"], data["ban_page"], message.html_text, edit=False)
+
+
+@router.message(StateFilter(St.ban_text))
+async def user_ban_text_invalid(message: Message):
+    await message.reply("⚠️ فقط متن بفرست، یا «بدون متن» رو بزن (لغو: /cancel).")
+
+
+@router.callback_query(F.data.startswith("usr:ub:"))
+async def user_unban(cb: CallbackQuery):
+    if not access.has_perm(cb.from_user.id, "users"):
+        await cb.answer(NO_PERM, show_alert=True)
+        return
+    _, _, uid, page = cb.data.split(":")
+    await access.unban(int(uid))
+    await show_user(cb.message, int(uid), int(page), edit=True, note="✅ کاربر آزاد شد.\n\n")
+    await cb.answer("آزاد شد")
 
 
 # ---------- جوین اجباری ----------
