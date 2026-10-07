@@ -2,9 +2,20 @@ import asyncio
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
-from aiogram.types import Message
+from aiogram.types import InputMediaPhoto, Message
 
 import db
+
+
+def full_name(u) -> str:
+    return " ".join(x for x in (u["first_name"], u["last_name"]) if x).strip()
+
+
+def user_label(u) -> str:
+    """@یوزرنیم؛ اگه نداشت اسمی که خودش گذاشته؛ اگه اون هم نبود آیدی عددی."""
+    if u["username"]:
+        return f"@{u['username']}"
+    return full_name(u) or str(u["user_id"])
 
 
 async def safe_edit(message: Message, text: str, markup=None):
@@ -85,14 +96,56 @@ async def delete_after(bot: Bot, messages: list, delay: int):
             pass
 
 
+MAX_ALBUM = 10  # سقف تلگرام برای هر آلبوم
+
+
+def group_files(files):
+    """عکس‌های پشت‌سرهم رو ده‌تا‌ده‌تا گروه می‌کنه؛ بقیه فایل‌ها تکی و به همون ترتیب میان.
+    خروجی: لیست (photos یا single، [فایل‌ها])"""
+    out, buf = [], []
+
+    def flush():
+        nonlocal buf
+        if buf:
+            out.append(("photos", buf))
+            buf = []
+
+    for f in files:
+        if f["file_type"] == "photo":
+            buf.append(f)
+            if len(buf) == MAX_ALBUM:
+                flush()
+        else:
+            flush()
+            out.append(("single", [f]))
+    flush()
+    return out
+
+
 async def deliver(bot: Bot, chat_id: int, user_id: int, batch):
     files = await db.get_files(batch["id"])
     caption = await db.get_setting("default_caption")
     sent = []
-    for f in files:
-        m = await with_retry(lambda f=f: send_file(bot, chat_id, f, caption))
-        if m:
-            sent.append(m)
+    first = True  # کپشن فقط روی اولین پیام/آلبوم میره
+    for kind, group in group_files(files):
+        cap = caption if first else None
+        first = False
+        if kind == "photos" and len(group) > 1:
+            # آلبوم: عکس‌ها به‌صورت پک (حداکثر ۱۰ تا) ارسال میشن
+            media = [
+                InputMediaPhoto(media=f["file_id"], caption=cap if i == 0 else None)
+                for i, f in enumerate(group)
+            ]
+            msgs = await with_retry(lambda media=media: bot.send_media_group(chat_id, media))
+            if msgs:
+                sent.extend(msgs)
+        else:
+            for f in group:
+                m = await with_retry(lambda f=f, cap=cap: send_file(bot, chat_id, f, cap))
+                if m:
+                    sent.append(m)
+                cap = None
+                await asyncio.sleep(0.05)
         await asyncio.sleep(0.05)
     await db.log_download(batch["id"], user_id)
 
