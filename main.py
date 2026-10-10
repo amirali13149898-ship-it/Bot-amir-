@@ -30,6 +30,7 @@ async def main():
 
     bot = Bot(config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
+    dp.update.outer_middleware(access.ThrottleMiddleware())  # اول ضد اسپم
     dp.update.outer_middleware(access.BanMiddleware())  # کاربرای بن‌شده به هیچ هندلری نمیرسن
     dp.include_router(admin.router)  # اول ادمین، بعد کاربر
     dp.include_router(user.router)
