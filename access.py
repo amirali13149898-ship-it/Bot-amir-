@@ -1,6 +1,8 @@
 """دسترسی‌ها: مالک‌ها (از ADMIN_IDS توی env) و ادمین‌هایی که مالک از داخل ربات اضافه می‌کنه.
 هر ادمین یه مجموعه دسترسی (perm) جدا داره؛ مالک همیشه به همه چیز دسترسی داره."""
 import logging
+import time
+from collections import deque
 
 from aiogram import BaseMiddleware
 from aiogram.filters import Filter
@@ -102,4 +104,31 @@ class BanMiddleware(BaseMiddleware):
             except Exception:
                 logging.debug("ban notice failed", exc_info=True)
             return None
+        return await handler(event, data)
+
+
+# ---------- ضد اسپم ----------
+class ThrottleMiddleware(BaseMiddleware):
+    """کاربر عادی: حداکثر MAX_HITS آپدیت در WINDOW ثانیه. ادمین‌ها معاف‌اند. اضافه‌ها بی‌صدا دور ریخته میشن."""
+
+    MAX_HITS = 8
+    WINDOW = 10.0
+
+    def __init__(self):
+        self._hits: dict[int, deque] = {}
+
+    async def __call__(self, handler, event: Update, data: dict):
+        u = data.get("event_from_user")
+        if not u or is_admin(u.id):
+            return await handler(event, data)
+        now = time.monotonic()
+        q = self._hits.setdefault(u.id, deque())
+        while q and now - q[0] > self.WINDOW:
+            q.popleft()
+        if len(q) >= self.MAX_HITS:
+            return None
+        q.append(now)
+        if len(self._hits) > 20000:  # جلوگیری از پر شدن رم
+            for k in [k for k, v in self._hits.items() if not v or now - v[-1] > self.WINDOW]:
+                self._hits.pop(k, None)
         return await handler(event, data)
