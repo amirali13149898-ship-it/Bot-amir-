@@ -56,6 +56,15 @@ alter table users add column if not exists last_name text;
 alter table users add column if not exists is_banned boolean not null default false;
 alter table users add column if not exists ban_text text;
 alter table users add column if not exists banned_at timestamptz;
+
+-- امنیت: جلوگیری از دسترسی از طریق API عمومی سوپابیس (کلید anon). اتصال مستقیم ربات (کاربر postgres) از RLS رد میشه.
+alter table users enable row level security;
+alter table admins enable row level security;
+alter table settings enable row level security;
+alter table channels enable row level security;
+alter table batches enable row level security;
+alter table files enable row level security;
+alter table downloads enable row level security;
 """
 
 
@@ -148,7 +157,7 @@ async def list_admins():
 
 async def add_admin(user_id: int, added_by: int, perms: list[str] | None = None):
     if perms is None:
-        perms = ALL_PERMS
+        perms = []  # کمترین دسترسی؛ مالک خودش از منوی دسترسی‌ها روشن می‌کنه
     await pool.execute(
         "insert into admins(user_id, added_by, perms) values($1,$2,$3) on conflict do nothing",
         user_id, added_by, perms,
@@ -212,7 +221,7 @@ async def del_channel(chat_id: int):
 
 # ---------- batches / files ----------
 async def create_batch(admin_id: int) -> tuple[int, str]:
-    code = secrets.token_urlsafe(6)
+    code = secrets.token_urlsafe(12)  # ~96 بیت؛ قابل حدس زدن نیست
     batch_id = await pool.fetchval(
         "insert into batches(code, created_by) values($1,$2) returning id",
         code, admin_id,
