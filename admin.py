@@ -244,6 +244,9 @@ async def upload_done(cb: CallbackQuery, state: FSMContext, bot: Bot):
 
 @router.message(StateFilter(St.upload))
 async def upload_receive(message: Message, state: FSMContext):
+    if not access.has_perm(message.from_user.id, "upload"):
+        await state.clear()
+        return
     media = utils.extract_media(message)
     if not media:
         await message.reply("⚠️ فقط فایل/مدیا بفرست (یا «پایان» رو بزن).")
@@ -419,6 +422,8 @@ async def channels(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("adm:chdel:"))
 async def channel_del(cb: CallbackQuery):
+    if await need_perm_cb(cb, "channels"):
+        return
     await db.del_channel(int(cb.data.split(":")[2]))
     await show_channels(cb.message, edit=True)
     await cb.answer("حذف شد")
@@ -426,6 +431,8 @@ async def channel_del(cb: CallbackQuery):
 
 @router.callback_query(F.data == "adm:chadd")
 async def channel_add(cb: CallbackQuery, state: FSMContext):
+    if await need_perm_cb(cb, "channels"):
+        return
     await state.set_state(St.channel)
     await utils.safe_edit(
         cb.message,
@@ -438,6 +445,9 @@ async def channel_add(cb: CallbackQuery, state: FSMContext):
 
 @router.message(StateFilter(St.channel))
 async def channel_receive(message: Message, state: FSMContext, bot: Bot):
+    if not access.has_perm(message.from_user.id, "channels"):
+        await state.clear()
+        return
     ref = None
     if isinstance(message.forward_origin, MessageOriginChannel):
         ref = message.forward_origin.chat.id
@@ -494,6 +504,8 @@ async def caption(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "adm:capdel")
 async def caption_del(cb: CallbackQuery):
+    if await need_perm_cb(cb, "caption"):
+        return
     await db.del_setting("default_caption")
     await show_caption(cb.message)
     await cb.answer("حذف شد")
@@ -501,6 +513,8 @@ async def caption_del(cb: CallbackQuery):
 
 @router.callback_query(F.data == "adm:capset")
 async def caption_set(cb: CallbackQuery, state: FSMContext):
+    if await need_perm_cb(cb, "caption"):
+        return
     await state.set_state(St.caption)
     await utils.safe_edit(cb.message, "✏️ کپشن جدید رو بفرست (حداکثر ۱۰۲۴ کاراکتر).\nبرای لغو: /cancel")
     await cb.answer()
@@ -508,6 +522,9 @@ async def caption_set(cb: CallbackQuery, state: FSMContext):
 
 @router.message(StateFilter(St.caption), F.text)
 async def caption_receive(message: Message, state: FSMContext):
+    if not access.has_perm(message.from_user.id, "caption"):
+        await state.clear()
+        return
     if len(message.text) > 1024:
         await message.reply("⚠️ کپشن بلند تر از ۱۰۲۴ کاراکتره.")
         return
@@ -595,6 +612,9 @@ async def pin_start(cb: CallbackQuery, state: FSMContext):
 
 @router.message(StateFilter(St.broadcast))
 async def broadcast_receive(message: Message, state: FSMContext, bot: Bot):
+    if not access.has_perm(message.from_user.id, "broadcast"):
+        await state.clear()
+        return
     await state.clear()
     launch(bot, message, pin=False)
     await message.reply("⏳ ارسال شروع شد. وقتی تموم شد گزارش میدم.")
@@ -602,6 +622,9 @@ async def broadcast_receive(message: Message, state: FSMContext, bot: Bot):
 
 @router.message(StateFilter(St.pin))
 async def pin_receive(message: Message, state: FSMContext, bot: Bot):
+    if not access.has_perm(message.from_user.id, "pin"):
+        await state.clear()
+        return
     await state.clear()
     launch(bot, message, pin=True)
     await message.reply("⏳ ارسال و سنجاق شروع شد. وقتی تموم شد گزارش میدم.")
@@ -699,6 +722,9 @@ async def own_perm_open(cb: CallbackQuery):
 async def own_perm_toggle(cb: CallbackQuery):
     _, _, uid, key = cb.data.split(":")
     uid = int(uid)
+    if key not in db.ALL_PERMS:
+        await cb.answer()
+        return
     current = await db.get_admin_perms(uid)
     if key in current:
         current.discard(key)
