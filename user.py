@@ -1,3 +1,4 @@
+import asyncio
 import html
 import re
 
@@ -16,11 +17,16 @@ router.message.filter(F.chat.type == "private")
 
 
 async def process_code(bot: Bot, chat_id: int, user_id: int, code: str):
-    batch = await db.get_batch(code) if CODE_RE.fullmatch(code or "") else None
+    if not CODE_RE.fullmatch(code or ""):
+        await bot.send_message(chat_id, "❌ این لینک معتبر نیست یا حذف شده.")
+        return
+    # پیدا کردن بسته و چک عضویت کانال‌ها هم‌زمان انجام میشه
+    batch, missing = await asyncio.gather(
+        db.get_batch(code), utils.missing_channels(bot, user_id)
+    )
     if not batch:
         await bot.send_message(chat_id, "❌ این لینک معتبر نیست یا حذف شده.")
         return
-    missing = await utils.missing_channels(bot, user_id)
     if missing:
         await bot.send_message(
             chat_id,
@@ -33,7 +39,7 @@ async def process_code(bot: Bot, chat_id: int, user_id: int, code: str):
 
 @router.message(CommandStart())
 async def start(message: Message, command: CommandObject, bot: Bot):
-    await db.add_user(message.from_user)
+    utils.spawn(db.add_user(message.from_user))  # ثبت کاربر، جواب رو معطل نکنه
     if not command.args:
         name = html.escape(message.from_user.first_name or "")
         await message.answer(f"سلام {name} 👋\nبرای دریافت فایل از لینک اختصاصی استفاده کن.")
