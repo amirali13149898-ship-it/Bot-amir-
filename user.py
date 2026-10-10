@@ -1,4 +1,5 @@
 import html
+import re
 
 from aiogram import Bot, F, Router
 from aiogram.filters import CommandObject, CommandStart
@@ -8,12 +9,14 @@ import db
 import keyboards as kb
 import utils
 
+CODE_RE = re.compile(r"[A-Za-z0-9_-]{4,40}")
+
 router = Router()
 router.message.filter(F.chat.type == "private")
 
 
 async def process_code(bot: Bot, chat_id: int, user_id: int, code: str):
-    batch = await db.get_batch(code)
+    batch = await db.get_batch(code) if CODE_RE.fullmatch(code or "") else None
     if not batch:
         await bot.send_message(chat_id, "❌ این لینک معتبر نیست یا حذف شده.")
         return
