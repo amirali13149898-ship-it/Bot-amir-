@@ -1,4 +1,5 @@
 import secrets
+import time
 
 import asyncpg
 
@@ -75,7 +76,7 @@ async def init(dsn: str):
     global pool
     # statement_cache_size=0 برای pooler سوپابیس (pgbouncer) لازمه
     pool = await asyncpg.create_pool(
-        dsn, min_size=1, max_size=5, statement_cache_size=0
+        dsn, min_size=2, max_size=5, statement_cache_size=0
     )
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA)
@@ -184,8 +185,17 @@ async def find_user_by_username(username: str) -> int | None:
 
 
 # ---------- settings ----------
+_CACHE_TTL = 60.0
+_settings_cache: dict[str, tuple[float, str | None]] = {}
+
+
 async def get_setting(key: str) -> str | None:
-    return await pool.fetchval("select value from settings where key = $1", key)
+    hit = _settings_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _CACHE_TTL:
+        return hit[1]
+    val = await pool.fetchval("select value from settings where key = $1", key)
+    _settings_cache[key] = (time.monotonic(), val)
+    return val
 
 
 async def set_setting(key: str, value: str):
@@ -194,15 +204,30 @@ async def set_setting(key: str, value: str):
            on conflict (key) do update set value = excluded.value""",
         key, value,
     )
+    _settings_cache.pop(key, None)
 
 
 async def del_setting(key: str):
     await pool.execute("delete from settings where key = $1", key)
+    _settings_cache.pop(key, None)
 
 
 # ---------- channels ----------
+_channels_cache: tuple[float, list] | None = None
+
+
 async def list_channels():
-    return await pool.fetch("select * from channels order by added_at")
+    global _channels_cache
+    if _channels_cache and time.monotonic() - _channels_cache[0] < _CACHE_TTL:
+        return _channels_cache[1]
+    rows = await pool.fetch("select * from channels order by added_at")
+    _channels_cache = (time.monotonic(), rows)
+    return rows
+
+
+def _drop_channels_cache():
+    global _channels_cache
+    _channels_cache = None
 
 
 async def add_channel(chat_id: int, title: str, username: str | None, link: str):
@@ -213,10 +238,12 @@ async def add_channel(chat_id: int, title: str, username: str | None, link: str)
                invite_link = excluded.invite_link""",
         chat_id, title, username, link,
     )
+    _drop_channels_cache()
 
 
 async def del_channel(chat_id: int):
     await pool.execute("delete from channels where chat_id = $1", chat_id)
+    _drop_channels_cache()
 
 
 # ---------- batches / files ----------
