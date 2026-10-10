@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
@@ -72,18 +73,38 @@ async def send_file(bot: Bot, chat_id: int, f, caption: str | None):
         return await bot.send_video_note(chat_id, fid)
 
 
+async def _is_missing(bot: Bot, ch, user_id: int) -> bool:
+    try:
+        m = await bot.get_chat_member(ch["chat_id"], user_id)
+    except Exception:
+        return False  # ربات از کانال حذف شده یا مشکل موقتی؛ کاربر رو گیر نندازیم
+    if m.status in ("left", "kicked"):
+        return True
+    return m.status == "restricted" and not getattr(m, "is_member", True)
+
+
 async def missing_channels(bot: Bot, user_id: int) -> list:
-    missing = []
-    for ch in await db.list_channels():
-        try:
-            m = await bot.get_chat_member(ch["chat_id"], user_id)
-        except Exception:
-            continue  # ربات از کانال حذف شده یا مشکل موقتی؛ کاربر رو گیر نندازیم
-        if m.status in ("left", "kicked"):
-            missing.append(ch)
-        elif m.status == "restricted" and not getattr(m, "is_member", True):
-            missing.append(ch)
-    return missing
+    """کانال‌ها رو هم‌زمان چک می‌کنه (نه یکی‌یکی)، با حفظ ترتیب."""
+    chans = await db.list_channels()
+    results = await asyncio.gather(*(_is_missing(bot, ch, user_id) for ch in chans))
+    return [ch for ch, miss in zip(chans, results) if miss]
+
+
+_bg_tasks: set = set()
+
+
+def spawn(coro):
+    """کار پس‌زمینه که جواب کاربر رو معطل نکنه؛ خطاش فقط لاگ میشه."""
+    t = asyncio.create_task(coro)
+    _bg_tasks.add(t)
+
+    def _done(task):
+        _bg_tasks.discard(task)
+        if not task.cancelled() and task.exception():
+            logging.warning("background task failed: %r", task.exception())
+
+    t.add_done_callback(_done)
+    return t
 
 
 async def delete_after(bot: Bot, messages: list, delay: int):
@@ -123,8 +144,13 @@ def group_files(files):
 
 
 async def deliver(bot: Bot, chat_id: int, user_id: int, batch):
-    files = await db.get_files(batch["id"])
-    caption = await db.get_setting("default_caption")
+    files, caption, enabled_raw, secs_raw = await asyncio.gather(
+        db.get_files(batch["id"]),
+        db.get_setting("default_caption"),
+        db.get_setting("delete_timer_enabled"),
+        db.get_setting("delete_timer_seconds"),
+    )
+    spawn(db.log_download(batch["id"], user_id))  # ثبت آمار، ارسال فایل رو معطل نکنه
     sent = []
     first = True  # کپشن فقط روی اولین پیام/آلبوم میره
     for kind, group in group_files(files):
@@ -147,10 +173,8 @@ async def deliver(bot: Bot, chat_id: int, user_id: int, batch):
                 cap = None
                 await asyncio.sleep(0.05)
         await asyncio.sleep(0.05)
-    await db.log_download(batch["id"], user_id)
 
-    enabled = (await db.get_setting("delete_timer_enabled")) != "0"
-    secs_raw = await db.get_setting("delete_timer_seconds")
+    enabled = enabled_raw != "0"
     secs = int(secs_raw) if secs_raw and secs_raw.isdigit() else 30
     if enabled and secs > 0 and sent:
         await bot.send_message(
